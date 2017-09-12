@@ -1,0 +1,91 @@
+1.页面调整:/pages/take_delivery/dispatcher.jsp
+	①.显示需要人工调度的订单数据:发送ajax请求查询orderType值为'人工分单'的order数据
+	(鉴于一般需要调度的数据会及时处理,未选择分页查询)
+		url : "${pageContext.request.contextPath}/orderAction_findOrdersByType.action"
+	②.datagrid校验是否选中,未选中,弹框提示,选中打开人工分配快递员窗口
+	handler : function() {
+							var rows = $("#grid").datagrid('getSelections');
+							if(rows.length==0){
+								$.messager.alert('提示信息','请先选择一行数据再进行操作','warning');    
+							}else{
+								// 弹出窗口
+								$("#dispatcherWindow").window('open');
+							}
+						}
+	③.发送ajax请求,查询快递员
+		<input class="easyui-combobox" required="true" name="courierId"  data-options="valueField:'id',textField:'name',
+		url:'${pageContext.request.contextPath}/courierAction_listajax.action'" />
+	④.进行form表单校验,给id="orderId"隐藏域域赋值
+	⑤.提交表单,发送请求到orderAction
+		// 点击保存按钮，为通知单 进行分单 --- 生成工单
+		$("#save").click(function() {
+			if($("#dispatcherForm").form('validate')){
+				//给隐藏域orderId赋值
+				var rows = $("#grid").datagrid('getSelections');
+				if(rows.length>0){
+					var id = rows[0].id;
+					$("#orderId").val(id);
+					$("#dispatcherForm").submit();
+				}
+			}
+		});
+2.后台代码:
+	①.在orderAction中实现orderType为'人工分单'的数据查询,向页面写入json数据
+		@Query("from Order where orderType=?")
+		List<Order> findByOrderType(String orderType);
+	②.在courierAction中查询deltag属性值为null快递员数据(数据若齐全,应控制快递员所属定区的大致范围,此功能暂未实现)
+		/**
+		 * 查询未被删除的快递员
+		 * @return
+		 */
+		@Action("courierAction_listajax")
+		public String listajax(){
+			List<Courier> list = courierService.findByDeltagIsNull();
+			this.java2Json(list, new String[]{"fixedAreas"});
+			return NONE;
+		}
+	③.在orderServiceImpl中根据orderId查询到订单对象,根据courierId查询到快递员对象,
+		生成工单,工单关联快递员,工单关联订单,给快递员发送短信,更新订单type字段值为"人工分单已完成",订单关联快递员
+		/**
+		 * @deprecated:人工分单,订单关联快递员
+		 */
+		public void dispatcher(Integer orderId, Integer courierId) {
+			Order order = orderDao.findOne(orderId);
+			Courier courier = courierDao.findOne(courierId);
+			if(courier!=null&&order!=null){
+				//找到快递员  创建任务：工单
+				WorkBill workBill = new WorkBill();
+				workBill.setAttachbilltimes(0);//追单次数
+				workBill.setBuildtime(new Date());
+				workBill.setPickstate("未取件");
+				workBill.setType("新单");
+				workBill.setRemark(order.getRemark());
+				workBill.setCourier(courier);  //工单关联快递员
+				workBill.setOrder(order);  //工单关联订单
+				workBill = workBillDao.save(workBill);
+				
+				String msg="新单到达！客户取件地址："+order.getSendAddress()+",客户电话："+order.getSendMobile()+"，客户姓名"
+						+ "："+order.getSendName()+",备注内容："+order.getSendMobileMsg();
+				//给快递员发送短信
+				String ret = SmsUtils.sendSmsByWebService(courier.getTelephone(), msg);
+				workBill.setSmsNumber(ret); //更新
+				
+				//更新订单数据
+				order.setStatus("待取件");
+				order.setOrderType("人工分单已完成");
+				order.setCourier(courier);//订单关联快递员
+			}
+		}
+注意:
+	1.页面端订单联系人字段为delegater,订单实体类中应提供相应的get方法
+	public String getDelegater(){
+		return sendName;
+	}
+	2.电话订单中寄送人的联系方式一般登记为telephone,网络下单的订单中寄送人联系方式一般登记为mobile,
+	dispatcher.jsp页面端联系人字段为telephone,故在订单中相应的get方法中处理,避免寄送人联系方式显示为空
+	public String getTelephone() {
+		if(telephone==null&&telephone.length()==0){
+			return sendMobile;
+		}
+		return telephone;
+	}
